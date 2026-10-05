@@ -420,8 +420,10 @@ public class AudioPlayer implements OnCompletionListener, OnPreparedListener, On
      * @param player           The MediaPlayer that reached the end of the file
      */
     public void onCompletion(MediaPlayer player) {
-        LOG.d(LOG_TAG, "on completion is calling stopped");
-        this.setState(STATE.MEDIA_STOPPED);
+        synchronized (this.handler) {
+            LOG.d(LOG_TAG, "on completion is calling stopped");
+            this.setState(STATE.MEDIA_STOPPED);
+        }
     }
 
     /**
@@ -493,28 +495,30 @@ public class AudioPlayer implements OnCompletionListener, OnPreparedListener, On
      * @param player           The MediaPlayer that is ready for playback
      */
     public void onPrepared(MediaPlayer player) {
-        // Listen for playback completion
-        this.player.setOnCompletionListener(this);
-        // seek to any location received while not prepared
-        this.seekToPlaying(this.seekOnPrepared);
-        // apply any playback rate received while not prepared
-        if (setRateOnPrepared >= 0)
-            this.player.setPlaybackParams (this.player.getPlaybackParams().setSpeed(setRateOnPrepared));
-        // If start playing after prepared
-        if (!this.prepareOnly) {
-            this.player.start();
-            this.setState(STATE.MEDIA_RUNNING);
-            this.seekOnPrepared = 0; //reset only when played
-        } else {
-            this.setState(STATE.MEDIA_STARTING);
-        }
-        // Save off duration
-        this.duration = getDurationInSeconds();
-        // reset prepare only flag
-        this.prepareOnly = true;
+        synchronized (this.handler) {
+            // Listen for playback completion
+            this.player.setOnCompletionListener(this);
+            // seek to any location received while not prepared
+            this.seekToPlaying(this.seekOnPrepared);
+            // apply any playback rate received while not prepared
+            if (setRateOnPrepared >= 0)
+                this.player.setPlaybackParams (this.player.getPlaybackParams().setSpeed(setRateOnPrepared));
+            // If start playing after prepared
+            if (!this.prepareOnly) {
+                this.player.start();
+                this.setState(STATE.MEDIA_RUNNING);
+                this.seekOnPrepared = 0; //reset only when played
+            } else {
+                this.setState(STATE.MEDIA_STARTING);
+            }
+            // Save off duration
+            this.duration = getDurationInSeconds();
+            // reset prepare only flag
+            this.prepareOnly = true;
 
-        // Send status notification to JavaScript
-        sendStatusChange(MEDIA_DURATION, null, this.duration, null);
+            // Send status notification to JavaScript
+            sendStatusChange(MEDIA_DURATION, null, this.duration, null);
+        }
     }
 
     /**
@@ -535,16 +539,18 @@ public class AudioPlayer implements OnCompletionListener, OnPreparedListener, On
      * @param arg2              an extra code, specific to the error.
      */
     public boolean onError(MediaPlayer player, int arg1, int arg2) {
-        String errorMessage = "AudioPlayer.onError(" + arg1 + ", " + arg2 + ")";
+        synchronized (this.handler) {
+            String errorMessage = "AudioPlayer.onError(" + arg1 + ", " + arg2 + ")";
 
-        // we don't want to send success callback
-        // so we don't call setState() here
-        this.state = STATE.MEDIA_STOPPED;
-        this.destroy();
-        // Send error notification to JavaScript
-        sendErrorStatus(arg1, errorMessage);
+            // we don't want to send success callback
+            // so we don't call setState() here
+            this.state = STATE.MEDIA_STOPPED;
+            this.destroy();
+            // Send error notification to JavaScript
+            sendErrorStatus(arg1, errorMessage);
 
-        return false;
+            return false;
+        }
     }
 
     /**
