@@ -208,6 +208,18 @@ public class AudioHandler extends CordovaPlugin {
     }
 
     /**
+     * Resume the players paused by a focus loss when the app comes back to the foreground.
+     * A permanent focus loss (a video ad in its own activity, another app playing music) never sends AUDIOFOCUS_GAIN back, so without this they stay paused.
+     * The focus request is refused during a phone call, so the players stay paused until the call ends.
+     */
+    @Override
+    public synchronized void onResume(boolean multitasking) {
+        if (!this.pausedForFocus.isEmpty() && getAudioFocus()) {
+            resumeAllGainedFocus();
+        }
+    }
+
+    /**
      * Called when a message is sent to plugin.
      *
      * @param id            The message id
@@ -440,7 +452,11 @@ public class AudioHandler extends CordovaPlugin {
             }
         };
 
-    public void getAudioFocus() {
+    /**
+     * Request the audio focus.
+     * @return true if the focus was granted
+     */
+    public boolean getAudioFocus() {
         String TAG2 = "AudioHandler.getAudioFocus(): Error : ";
 
         AudioManager am = (AudioManager) this.cordova.getActivity().getSystemService(Context.AUDIO_SERVICE);
@@ -450,8 +466,9 @@ public class AudioHandler extends CordovaPlugin {
 
         if (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             LOG.e(TAG2,result + " instead of " + AudioManager.AUDIOFOCUS_REQUEST_GRANTED);
+            return false;
         }
-
+        return true;
     }
 
 
