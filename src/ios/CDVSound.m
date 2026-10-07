@@ -29,6 +29,8 @@
 @interface CDVSound ()
 // All CDVSound state (soundCache, currMediaId, avSession, avPlayer and every CDVAudioFile field) is read and written only on this serial queue, in the order the JS calls arrive.
 @property (nonatomic, strong) dispatch_queue_t soundQueue;
+// The ids of the media started with play and not paused, stopped, finished or released since: the ones whose player is not playing were paused by an audio session interruption (a phone call, Siri, an alarm).
+@property (nonatomic, strong) NSMutableSet* playingMediaIds;
 @end
 
 static void* const kCDVSoundQueueKey = (void*)&kCDVSoundQueueKey;
@@ -43,6 +45,10 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
 {
     self.soundQueue = dispatch_queue_create("org.apache.cordova.media.CDVSound", DISPATCH_QUEUE_SERIAL);
     dispatch_queue_set_specific(self.soundQueue, kCDVSoundQueueKey, (__bridge void*)self, NULL);
+    self.playingMediaIds = [NSMutableSet set];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onAudioSessionInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(onAppDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
 
     NSDictionary* settings = self.commandDelegate.settings;
     keepAvAudioSessionAlwaysActive = [[settings objectForKey:[@"KeepAVAudioSessionAlwaysActive" lowercaseString]] boolValue];
@@ -55,6 +61,51 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
                 }
             }
         });
+    }
+}
+
+// The system pauses the players when an interruption begins and never resumes them, so they are resumed here when the interruption ends and iOS allows it.
+- (void)onAudioSessionInterruption:(NSNotification*)notification
+{
+    AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    AVAudioSessionInterruptionOptions options = [notification.userInfo[AVAudioSessionInterruptionOptionKey] unsignedIntegerValue];
+    if (type == AVAudioSessionInterruptionTypeEnded && (options & AVAudioSessionInterruptionOptionShouldResume)) {
+        dispatch_async(self.soundQueue, ^{
+            [self resumeInterruptedPlayers];
+        });
+    }
+}
+
+// iOS does not always post the end of an interruption (for example when the call ends while the app is in the background), so coming back to the foreground resumes the players too.
+- (void)onAppDidBecomeActive:(NSNotification*)notification
+{
+    dispatch_async(self.soundQueue, ^{
+        [self resumeInterruptedPlayers];
+    });
+}
+
+// The session cannot be activated while a phone call holds the audio, so during a call the players stay paused until the call ends.
+- (void)resumeInterruptedPlayers
+{
+    NSMutableArray* interruptedPlayers = [NSMutableArray array];
+    for (NSString* mediaId in self.playingMediaIds) {
+        CDVAudioFile* audioFile = [[self soundCache] objectForKey:mediaId];
+        if (audioFile.player != nil && ![audioFile.player isPlaying]) {
+            [interruptedPlayers addObject:audioFile.player];
+        }
+    }
+    if ([interruptedPlayers count] == 0) {
+        return;
+    }
+    if ([self hasAudioSession]) {
+        NSError* __autoreleasing err = nil;
+        if (![self.avSession setActive:YES error:&err]) {
+            NSLog(@"Unable to resume audio after an interruption: %@", [err localizedFailureReason]);
+            return;
+        }
+    }
+    for (CDVAudioPlayer* player in interruptedPlayers) {
+        [player play];
     }
 }
 
@@ -517,6 +568,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
                     }
 
                     [audioFile.player play];
+                    [self.playingMediaIds addObject:mediaId];
                     duration = round(audioFile.player.duration * 1000) / 1000;
                 }
 
@@ -614,6 +666,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
         NSLog(@"Stopped playing audio sample '%@'", audioFile.resourcePath);
         [audioFile.player stop];
         audioFile.player.currentTime = 0;
+        [self.playingMediaIds removeObject:mediaId];
         [self onStatus:MEDIA_STATE mediaId:mediaId param:@(MEDIA_STOPPED)];
     }
     // seek to start and pause
@@ -652,6 +705,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
         NSLog(@"Paused playing audio sample '%@'", audioFile.resourcePath);
         if (audioFile.player != nil) {
             [audioFile.player pause];
+            [self.playingMediaIds removeObject:mediaId];
         } else if (avPlayer != nil) {
             [avPlayer pause];
         }
@@ -684,6 +738,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
             // The seek is past the end of file.  Stop media and reset to beginning instead of seeking past the end.
             [audioFile.player stop];
             audioFile.player.currentTime = 0;
+            [self.playingMediaIds removeObject:mediaId];
             [self onStatus:MEDIA_STATE mediaId:mediaId param:@(MEDIA_STOPPED)];
         } else {
             audioFile.player.currentTime = posInSeconds;
@@ -752,6 +807,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
                 self.avSession = nil;
             }
             [[self soundCache] removeObjectForKey:mediaId];
+            [self.playingMediaIds removeObject:mediaId];
             NSLog(@"Media with id %@ released", mediaId);
         }
     }
@@ -970,6 +1026,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
 
     if (audioFile != nil) {
         NSLog(@"Finished playing audio sample '%@'", audioFile.resourcePath);
+        [self.playingMediaIds removeObject:mediaId];
     }
     if (flag) {
         audioFile.player.currentTime = 0;
@@ -1028,7 +1085,8 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
     for(id key in [self soundCache]) {
         CDVAudioFile* audioFile = [[self soundCache] objectForKey:key];
         if (audioFile != nil) {
-            if (audioFile.player != nil && ![audioFile.player isPlaying]) {
+            // A player paused by an interruption is kept, so it can be resumed when the interruption ends
+            if (audioFile.player != nil && ![audioFile.player isPlaying] && ![self.playingMediaIds containsObject:key]) {
                 [keysToRemove addObject:key];
             }
             if (audioFile.recorder != nil && ![audioFile.recorder isRecording]) {
@@ -1073,6 +1131,7 @@ BOOL keepAvAudioSessionAlwaysActive = NO;
     }
 
     [[self soundCache] removeAllObjects];
+    [self.playingMediaIds removeAllObjects];
 }
 
 - (void)getCurrentAmplitudeAudio:(CDVInvokedUrlCommand*)command
