@@ -33,3 +33,4 @@ node_modules
 bin
 .project
 .classpath
+.idea
