@@ -496,6 +496,10 @@ public class AudioPlayer implements OnCompletionListener, OnPreparedListener, On
      */
     public void onPrepared(MediaPlayer player) {
         synchronized (this.handler) {
+            // A player released while this callback waited for the lock (onDestroy and onReset run on the main thread) is no longer ours.
+            if (player != this.player) {
+                return;
+            }
             // Listen for playback completion
             this.player.setOnCompletionListener(this);
             // seek to any location received while not prepared
