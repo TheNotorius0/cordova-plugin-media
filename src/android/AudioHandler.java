@@ -186,6 +186,8 @@ public class AudioHandler extends CordovaPlugin {
      * Stop all audio players and recorders.
      */
     public synchronized void onDestroy() {
+        // No status may reach a page that is closing (onDestroy) or already gone (onReset): the "stopped" sent by destroy() below makes the game's music loop call play() on a WebView being destroyed.
+        messageChannel = null;
         if (!players.isEmpty()) {
             onLastPlayerReleased();
         }
